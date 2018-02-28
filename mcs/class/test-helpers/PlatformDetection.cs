@@ -9,5 +9,18 @@ namespace System
 		public static readonly bool IsWindowsNanoServer = false;
 		public static bool IsNonZeroLowerBoundArraySupported => true;
 		public static bool IsUap => false;
+
+		//TODO: check?
+		public static bool IsNotWindowsSubsystemForLinux => true;
+		public static bool IsWindowsSubsystemForLinux => false;
+		public static bool IsFedora => false;
+
+		public static bool IsWindows {
+			get {
+				PlatformID id = Environment.OSVersion.Platform;
+				return id == PlatformID.Win32Windows || id == PlatformID.Win32NT;
+			}
+		}
+		public static bool IsInAppContainer => false;
 	}
 }
