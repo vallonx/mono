@@ -152,6 +152,52 @@ get_win32_restore_stack (void)
 
 	return start;
 }
+#elif HAVE_API_SUPPORT_WIN32_RESET_STKOFLW && TARGET_ARM64
+static gpointer
+get_win32_restore_stack(void)
+{
+	static guint8* start = NULL;
+	guint8* code;
+
+	if (start)
+		return start;
+
+	const int size = 128;
+
+	/* restore_stack (void) */
+	start = code = mono_global_codeman_reserve(size);
+
+	arm64_push_reg(code, ARMREG_R5);
+	arm64_mov_reg_reg(code, ARMREG_R5, ARMREG_R4, 8);
+
+	/* push 32 bytes of stack space for Win64 calling convention */
+	arm64_alu_reg_imm(code, X86_SUB, ARMREG_R5, 32);
+
+	/* restore guard page */
+	arm64_mov_reg_imm(code, ARMREG_R11, _resetstkoflw);
+	arm64_call_reg(code, ARMREG_R11);
+
+	/* get jit_tls with context to restore */
+	arm64_mov_reg_imm(code, ARMREG_R11, mono_tls_get_jit_tls_extern);
+	arm64_call_reg(code, ARMREG_R11);
+
+	/* move jit_tls from return reg to arg reg */
+	arm64_mov_reg_reg(code, ARMREG_R7, ARMREG_R0, 8);
+
+	/* retrieve pointer to saved context */
+	arm64_alu_reg_imm(code, X86_ADD, ARMREG_R7, MONO_STRUCT_OFFSET(MonoJitTlsData, stack_restore_ctx));
+
+	/* this call does not return */
+	arm64_mov_reg_imm(code, ARMREG_R11, mono_restore_context);
+	arm64_call_reg(code, ARMREG_R11);
+
+	g_assertf((code - start) <= size, "%d %d", (int)(code - start), size);
+
+	mono_arch_flush_icache(start, code - start);
+	MONO_PROFILER_RAISE(jit_code_buffer, (start, code - start, MONO_PROFILER_CODE_BUFFER_EXCEPTION_HANDLING, NULL));
+
+	return start;
+}
 #else
 static gpointer
 get_win32_restore_stack (void)

@@ -915,4 +915,118 @@ arm_encode_arith_imm (int imm, guint32 *shift)
 
 #define arm_autibsp(p) arm_format_autib ((p), 0b0011, 0b111)
 
+//---
+
+#include "../x86/x86-codegen.h"
+
+#define arm64_codegen_pre(inst)
+#define arm64_codegen_post(inst)
+
+#define ARM64_REX(bits) ((unsigned char)(0x40 | (bits)))
+
+typedef union {
+	guint64 val;
+	unsigned char b[8];
+} arm64_imm_buf;
+
+#define x86_imm_emit64(inst,imm)     \
+	do {	\
+			arm64_imm_buf imb; 	\
+			imb.val = (guint64) (imm);	\
+			*(inst)++ = imb.b [0];	\
+			*(inst)++ = imb.b [1];	\
+			*(inst)++ = imb.b [2];	\
+			*(inst)++ = imb.b [3];	\
+			*(inst)++ = imb.b [4];	\
+			*(inst)++ = imb.b [5];	\
+			*(inst)++ = imb.b [6];	\
+			*(inst)++ = imb.b [7];	\
+	} while (0)
+
+#define arm64_emit_rex(inst, width, reg_modrm, reg_index, reg_rm_base_opcode) do \
+	{ \
+		unsigned char _arm64_rex_bits = \
+			(((width) > 4) ? ARMSIZE_W : 0) | \
+			(((reg_modrm) > 7) ? ARMSIZE_H : 0) | \
+			(((reg_index) > 7) ? ARMSIZE_X : 0) | \
+			(((reg_rm_base_opcode) > 7) ? ARMSIZE_B : 0); \
+		if ((_arm64_rex_bits != 0) || (((width) == 1))) *(inst)++ = ARM64_REX(_arm64_rex_bits); \
+	} while (0)
+
+#define arm64_push_reg(inst,reg)	\
+	do {	\
+		arm64_codegen_pre(inst); \
+		arm64_emit_rex(inst, 0, 0, 0, (reg)); \
+		*(inst)++ = (unsigned char)0x50 + ((reg) & 0x7);	\
+		arm64_codegen_post(inst); \
+	} while (0)
+
+#define arm64_mov_reg_reg(inst,dreg,reg,size)	\
+	do {	\
+		arm64_codegen_pre(inst); \
+		if ((size) == 2) \
+			x86_prefix((inst), X86_OPERAND_PREFIX); \
+		arm64_emit_rex(inst, (size), (dreg), 0, (reg)); \
+		switch ((size)) {	\
+		case 1: *(inst)++ = (unsigned char)0x8a; break;	\
+		case 2: case 4: case 8: *(inst)++ = (unsigned char)0x8b; break;	\
+		default: assert (0);	\
+		}	\
+		x86_reg_emit ((inst), (dreg), (reg));	\
+		arm64_codegen_post(inst); \
+	} while (0)
+
+#define arm64_alu_reg_imm_size_body(inst,opc,reg,imm,size) \
+	do {	\
+		if (x86_is_imm8((imm))) {	\
+			arm64_emit_rex(inst, size, 0, 0, (reg)); \
+			*(inst)++ = (unsigned char)0x83;	\
+			x86_reg_emit ((inst), (opc), (reg));	\
+			x86_imm_emit8 ((inst), (imm));	\
+		} else if ((reg) == ARMREG_R0) {	\
+			arm64_emit_rex(inst, size, 0, 0, 0); \
+			*(inst)++ = (((unsigned char)(opc)) << 3) + 5;	\
+			x86_imm_emit32 ((inst), (imm));	\
+		} else {	\
+			arm64_emit_rex(inst, size, 0, 0, (reg)); \
+			*(inst)++ = (unsigned char)0x81;	\
+			x86_reg_emit ((inst), (opc), (reg));	\
+			x86_imm_emit32 ((inst), (imm));	\
+		}	\
+	} while (0)
+
+#define arm64_alu_reg_imm_size(inst,opc,reg,imm,size) \
+	arm64_alu_reg_imm_size_body((inst), (opc), (reg), (imm), (size))
+
+
+
+#define arm64_alu_reg_imm(inst,opc,reg,imm) arm64_alu_reg_imm_size((inst),(opc),(reg),(imm),8)
+#define arm64_is_imm32(val) ((gint64)val >= -((gint64)1<<31) && (gint64)val <= (((gint64)1<<31)-1))
+
+#define arm64_mov_reg_imm_size(inst,reg,imm,size)	\
+	do {	\
+		arm64_codegen_pre(inst); \
+		arm64_emit_rex(inst, (size), 0, 0, (reg)); \
+		*(inst)++ = (unsigned char)0xb8 + ((reg) & 0x7);	\
+		if ((size) == 8) \
+			x86_imm_emit64 ((inst), (guint64)(imm));	\
+		else \
+			x86_imm_emit32 ((inst), (int)(guint64)(imm));	\
+		arm64_codegen_post(inst); \
+	} while (0)
+
+#define arm64_mov_reg_imm(inst,reg,imm)	\
+	do {	\
+		arm64_codegen_pre(inst); \
+		arm64_mov_reg_imm_size ((inst), (reg), (imm), (arm64_is_imm32 (((gint64)imm)) ? 4 : 8)); \
+		arm64_codegen_post(inst); \
+	} while (0)
+
+#define arm64_call_reg(inst,reg)	\
+	do {	\
+		arm64_emit_rex(inst, 0, 0, 0, (reg)); \
+		*(inst)++ = (unsigned char)0xff;	\
+		x86_reg_emit ((inst), 2, ((reg) & 0x7));	\
+	} while (0)
+
 #endif /* __arm_CODEGEN_H__ */
