@@ -66,6 +66,8 @@ MONO_API void mono_unity_set_vprintf_func(vprintf_func func);
 
 void unity_mono_install_memory_callbacks(MonoMemoryCallbacks* callbacks);
 
+MONO_API extern void burst_mono_debugger_thread_tick();
+MONO_API extern void burst_mono_signal_domain_events();
 MONO_API extern void burst_mono_install_hooks(BurstMonoDebuggerCallbacks* callbacks, void* extra);
 MONO_API extern void burst_mono_update_tracking_pointers(MonoDomain* domain,MonoClass* klass);
 

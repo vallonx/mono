@@ -541,6 +541,7 @@ static AgentConfig agent_config;
 static MonoDomain* g_BurstDebugDomain = NULL;
 static BurstMonoDebuggerCallbacks g_BurstDebugCallbacks = { 0 };
 static MonoClass* g_BurstKlass = NULL;
+static MonoAssembly* g_BurstAssembly = NULL;
 static MonoCoopMutex g_BurstDebugMutex;
 #define burst_lock() do {mono_coop_mutex_lock (&g_BurstDebugMutex);}while(0)
 #define burst_unlock() do {mono_coop_mutex_unlock (&g_BurstDebugMutex);}while(0)
@@ -4070,12 +4071,26 @@ process_event (EventKind event, gpointer arg, gint32 il_offset, MonoContext *ctx
 		case EVENT_KIND_ASSEMBLY_UNLOAD: {
 			DebuggerTlsData *tls;
 
-			/* The domain the assembly belonged to is not equal to the current domain */
-			tls = (DebuggerTlsData *)mono_native_tls_get_value (debugger_tls_id);
-			g_assert (tls);
-			g_assert (tls->domain_unloading);
+			int burstDebug = 0;
+			burst_lock();
+			burstDebug = g_BurstAssembly == (MonoAssembly*)arg;
+			burst_unlock();
+			
+			if (burstDebug)
+			{
+				burst_lock();
+				buffer_add_assemblyid(&buf, g_BurstDebugDomain, (MonoAssembly*)arg);
+				burst_unlock();
+			}
+			else
+			{
+				/* The domain the assembly belonged to is not equal to the current domain */
+				tls = (DebuggerTlsData*)mono_native_tls_get_value(debugger_tls_id);
+				g_assert(tls);
+				g_assert(tls->domain_unloading);
 
-			buffer_add_assemblyid (&buf, tls->domain_unloading, (MonoAssembly *)arg);
+				buffer_add_assemblyid(&buf, tls->domain_unloading, (MonoAssembly*)arg);
+			}
 			break;
 		}
 		case EVENT_KIND_TYPE_LOAD:
@@ -10356,8 +10371,9 @@ debugger_thread (void *arg)
 		if (attach_func)
 			attach_func (TRUE);
 	}
-	
+
 	while (!attach_failed) {
+
 		res = transport_recv (header, HEADER_LENGTH);
 
 		/* This will break if the socket is closed during shutdown too */
@@ -10567,6 +10583,8 @@ static void burst_mono_shutdown()
 	burst_unlock();
 }
 
+volatile gint32 burst_atomic_counter;
+
 // Called from the main thread - once only
 static void burst_mono_install_hooks_imp(BurstMonoDebuggerCallbacks* callbacks,void* domainInitCallback)
 {
@@ -10594,6 +10612,8 @@ static void burst_mono_install_hooks_imp(BurstMonoDebuggerCallbacks* callbacks,v
 	//structure (burst/mono & unity)
 	callbacks->burst_unity_domain_init = domainInitCallback;
 
+	burst_atomic_counter = 0;
+
 	callbacks->BurstFinishSetup();	// notify burst the mono callbacks are in place
 	burst_unlock();
 }
@@ -10614,8 +10634,52 @@ void burst_mono_update_tracking_pointers(MonoDomain* domain, MonoClass* klass)
 	burst_lock();
 	g_BurstKlass = klass;
 	g_BurstDebugDomain = domain;
+	MonoAssembly* assembly=m_class_get_image (g_BurstKlass)->assembly;
+	g_BurstAssembly = assembly;
 	burst_unlock();
 	send_type_load(g_BurstKlass);	// We must manually send the type load event, since we never actually JIT anything in this class
 					//without this call, some mono debuggers will not work properly for burst
 #endif /* DISABLE_SDB */
 }
+
+void burst_mono_debugger_thread_true_tick();
+
+void burst_mono_signal_domain_events()
+{
+	mono_atomic_inc_i32(&burst_atomic_counter);
+//	burst_mono_debugger_thread_true_tick();
+}
+
+void burst_mono_debugger_thread_true_tick()
+{
+	gint32 latch_counter = mono_atomic_load_i32(&burst_atomic_counter);
+	if (latch_counter == 0)	// If the counter is 0, we have no work to do
+		return;
+	if (!mono_is_debugger_attached())
+		return;
+
+	process_profiler_event (EVENT_KIND_ASSEMBLY_UNLOAD, (gpointer)g_BurstAssembly);
+	process_profiler_event (EVENT_KIND_APPDOMAIN_UNLOAD, (gpointer)g_BurstDebugDomain);
+	clear_event_requests_for_assembly (g_BurstAssembly);
+	clear_types_for_assembly (g_BurstAssembly);
+
+	mono_loader_lock();
+	burst_lock();
+	debugger_agent_free_domain_info(g_BurstDebugDomain);
+	mono_de_domain_add(g_BurstDebugDomain);	// need to add ourselves back to the list, because agent_free_domain_info removes us
+	burst_unlock();
+	mono_loader_unlock();
+
+	process_profiler_event (EVENT_KIND_APPDOMAIN_CREATE, (gpointer)g_BurstDebugDomain);
+
+	send_type_load(g_BurstKlass);	// We must manually send the type load event, since we never actually JIT anything in this class
+
+	mono_atomic_cas_i32(&burst_atomic_counter, 0, latch_counter);	// Clear the counter if no additional resets occured between starting and ending our refresh process
+}
+
+void burst_mono_debugger_thread_tick()
+{
+	burst_mono_debugger_thread_true_tick();
+}
+
+
