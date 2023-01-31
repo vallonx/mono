@@ -4071,26 +4071,12 @@ process_event (EventKind event, gpointer arg, gint32 il_offset, MonoContext *ctx
 		case EVENT_KIND_ASSEMBLY_UNLOAD: {
 			DebuggerTlsData *tls;
 
-			int burstDebug = 0;
-			burst_lock();
-			burstDebug = g_BurstAssembly == (MonoAssembly*)arg;
-			burst_unlock();
-			
-			if (burstDebug)
-			{
-				burst_lock();
-				buffer_add_assemblyid(&buf, g_BurstDebugDomain, (MonoAssembly*)arg);
-				burst_unlock();
-			}
-			else
-			{
-				/* The domain the assembly belonged to is not equal to the current domain */
-				tls = (DebuggerTlsData*)mono_native_tls_get_value(debugger_tls_id);
-				g_assert(tls);
-				g_assert(tls->domain_unloading);
+			/* The domain the assembly belonged to is not equal to the current domain */
+			tls = (DebuggerTlsData*)mono_native_tls_get_value(debugger_tls_id);
+			g_assert(tls);
+			g_assert(tls->domain_unloading);
 
-				buffer_add_assemblyid(&buf, tls->domain_unloading, (MonoAssembly*)arg);
-			}
+			buffer_add_assemblyid(&buf, tls->domain_unloading, (MonoAssembly*)arg);
 			break;
 		}
 		case EVENT_KIND_TYPE_LOAD:
@@ -10658,19 +10644,17 @@ void burst_mono_debugger_thread_true_tick()
 	if (!mono_is_debugger_attached())
 		return;
 
-	process_profiler_event (EVENT_KIND_ASSEMBLY_UNLOAD, (gpointer)g_BurstAssembly);
-	process_profiler_event (EVENT_KIND_APPDOMAIN_UNLOAD, (gpointer)g_BurstDebugDomain);
-	clear_event_requests_for_assembly (g_BurstAssembly);
-	clear_types_for_assembly (g_BurstAssembly);
+	appdomain_start_unload(NULL,g_BurstDebugDomain);
+	assembly_unload(NULL,g_BurstAssembly);
+	appdomain_unload(NULL, g_BurstDebugDomain);
 
 	mono_loader_lock();
 	burst_lock();
-	debugger_agent_free_domain_info(g_BurstDebugDomain);
-	mono_de_domain_add(g_BurstDebugDomain);	// need to add ourselves back to the list, because agent_free_domain_info removes us
+	debugger_agent_free_domain_info(g_BurstDebugDomain);	// We need to call this to flush any typeids (its usually done via free_domain)
 	burst_unlock();
 	mono_loader_unlock();
 
-	process_profiler_event (EVENT_KIND_APPDOMAIN_CREATE, (gpointer)g_BurstDebugDomain);
+	appdomain_load(NULL, g_BurstDebugDomain);
 
 	send_type_load(g_BurstKlass);	// We must manually send the type load event, since we never actually JIT anything in this class
 
